@@ -2,7 +2,7 @@ import sqlite3
 import datetime
 
 def connect_db():
-    """Connect to the SQLite database (library.db)."""
+    """Connect to the SQLite database."""
     return sqlite3.connect("library.db")
 
 def find_item(conn):
@@ -23,54 +23,71 @@ def find_item(conn):
         print("No items found.")
 
 def borrow_item(conn):
-    """Borrow an item from the library."""
+    """
+    Borrow an item from the library.
+    
+    Inserts a new Activity record and marks the Inventory record as unavailable.
+    """
     member_id = input("Enter your member ID: ")
     copy_id = input("Enter the copy ID you want to borrow: ")
     borrow_date = datetime.date.today().isoformat()
     due_date = (datetime.date.today() + datetime.timedelta(days=14)).isoformat()
     cur = conn.cursor()
     try:
+        # Insert new loan record. The returnDate is set to NULL until the item is returned.
         cur.execute("""
             INSERT INTO Activity (copyID, memberID, borrowDate, dueDate, returnDate)
             VALUES (?, ?, ?, ?, NULL)
         """, (copy_id, member_id, borrow_date, due_date))
+        # Update Inventory to mark the copy as unavailable.
         cur.execute("UPDATE Inventory SET Available = 0 WHERE copyID = ?", (copy_id,))
         conn.commit()
-        print(f"Item borrowed successfully. Due date is {due_date}.")
+        print(f"Item borrowed successfully. Due date is {due_date}")
     except Exception as e:
         print("Error borrowing item:", e)
 
 def return_item(conn):
-    """Return a borrowed item."""
+    """
+    Return a borrowed item.
+    
+    Updates the Activity record with the return date and marks the Inventory record as available.
+    Note: Fine history is maintained in the Fine table. When an overdue fine exists,
+    its record is updated (not deleted) via triggers when the item is returned. A paymentDate
+    set from NULL indicates that the fine has been paid.
+    """
     loan_id = input("Enter your loan ID: ")
     return_date = datetime.date.today().isoformat()
     cur = conn.cursor()
     try:
+        # Update the Activity record to record the return date.
         cur.execute("UPDATE Activity SET returnDate = ? WHERE loanID = ?", (return_date, loan_id))
+        # Retrieve the associated copyID.
         cur.execute("SELECT copyID FROM Activity WHERE loanID = ?", (loan_id,))
         result = cur.fetchone()
         if result:
             copy_id = result[0]
+            # Mark the item as available in the Inventory.
             cur.execute("UPDATE Inventory SET Available = 1 WHERE copyID = ?", (copy_id,))
         conn.commit()
-        print("Item returned successfully.")
+        print("Item returned successfully. Fine history is preserved for record purposes.")
     except Exception as e:
         print("Error returning item:", e)
 
 def donate_item(conn):
     """
     Donate an item to the library.
-    If the item does not exist, add it to the Item table.
-    Then add a new record to Inventory with source='Donated'.
+    
+    If the item does not exist in the catalog, prompts for additional details to add it.
+    Then, adds a new record in Inventory with the source noted as 'Donated'.
     """
     isbn = input("Enter ISBN of the donated item: ")
     cur = conn.cursor()
-    # Check if item already exists
+    # Check if the item already exists in the catalog.
     cur.execute("SELECT * FROM Item WHERE ISBN = ?", (isbn,))
     item = cur.fetchone()
     if not item:
-        print("Item not found. Please provide item details.")
-        item_type = input("Enter item type (Print Book, Online Book, etc.): ")
+        print("Item not found in the catalog. Please provide additional details.")
+        item_type = input("Enter item type (e.g., Print Book, Online Book, Magazine): ")
         title = input("Enter title: ")
         author = input("Enter author: ")
         publish_date = input("Enter publish date (YYYY-MM-DD): ")
@@ -79,7 +96,6 @@ def donate_item(conn):
             INSERT INTO Item (ISBN, itemType, title, author, publishDate, Publisher)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (isbn, item_type, title, author, publish_date, publisher))
-    # Add to Inventory
     shelf_number = input("Enter shelf number: ")
     acquisition_date = datetime.date.today().isoformat()
     physical_condition = input("Enter physical condition: ")
@@ -95,7 +111,7 @@ def donate_item(conn):
         print("Error recording donation:", e)
 
 def find_event(conn):
-    """Find an event by name or type."""
+    """Find an event in the library by event name or type."""
     search = input("Enter event name or type to search for: ")
     cur = conn.cursor()
     cur.execute("""
@@ -113,10 +129,11 @@ def find_event(conn):
 
 def register_event(conn):
     """
-    Register for an event by increasing the reservedSeats by 1,
-    if there is available capacity in the room.
+    Register for an event.
+    
+    Checks if the reservedSeats is within the room's capacity, and if so, increments it.
     """
-    event_id = input("Enter the Event ID: ")
+    event_id = input("Enter the Event ID you want to register for: ")
     cur = conn.cursor()
     try:
         cur.execute("SELECT reservedSeats, roomNumber FROM Event WHERE EventID = ?", (event_id,))
@@ -124,8 +141,8 @@ def register_event(conn):
         if result:
             current_reserved, room_number = result
             cur.execute("SELECT maxCapacity FROM Room WHERE roomNumber = ?", (room_number,))
-            capacity = cur.fetchone()[0]
-            if current_reserved < capacity:
+            room_capacity = cur.fetchone()[0]
+            if current_reserved < room_capacity:
                 new_reserved = current_reserved + 1
                 cur.execute("UPDATE Event SET reservedSeats = ? WHERE EventID = ?", (new_reserved, event_id))
                 conn.commit()
@@ -135,18 +152,19 @@ def register_event(conn):
         else:
             print("Event not found.")
     except Exception as e:
-        print("Error registering for the event:", e)
+        print("Error registering for event:", e)
 
 def volunteer(conn):
     """
     Volunteer for the library.
-    Adds a new record to Personnel with position='Volunteer' and salary=0.
+    
+    Adds a new Personnel record with Position set to 'Volunteer'.
     """
     first_name = input("Enter your first name: ")
     last_name = input("Enter your last name: ")
     start_date = datetime.date.today().isoformat()
-    salary = 0.0
-    room_number = input("Enter the room number where you'll volunteer: ")
+    salary = 0.0  # Volunteers do not receive a salary.
+    room_number = input("Enter the room number where you'll volunteer (e.g., R001 for front desk): ")
     position = "Volunteer"
     cur = conn.cursor()
     try:
@@ -162,25 +180,27 @@ def volunteer(conn):
 def ask_for_help(conn):
     """
     Ask for help from a librarian.
-    Looks for a librarian in room R001 (front desk).
+    
+    Looks up a librarian assigned to room R001 (front desk) and provides instructions.
     """
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT personnelID 
+            SELECT personnelID, Position 
             FROM Personnel 
-            WHERE Position LIKE '%Librarian%' AND roomNumber = 'R001'
+            WHERE Position LIKE '%Librarian%' AND roomNumber = 'R001' 
             LIMIT 1
         """)
         librarian = cur.fetchone()
         if librarian:
-            print("A librarian is available in room R001. Please proceed there.")
+            print("A librarian is available to help you. Please go to room R001.")
         else:
-            print("No librarian is currently available in room R001.")
+            print("No librarian is currently available. Please try again later.")
     except Exception as e:
         print("Error finding a librarian:", e)
 
 def main():
+    """Main menu loop for the library application."""
     conn = connect_db()
     while True:
         print("\nLibrary Database Application")
@@ -194,7 +214,7 @@ def main():
         print("8. Ask for help from a librarian")
         print("9. Exit")
         choice = input("Enter your choice: ").strip()
-
+        
         if choice == '1':
             find_item(conn)
         elif choice == '2':
@@ -216,7 +236,7 @@ def main():
             break
         else:
             print("Invalid choice. Please try again.")
-
+    
     conn.close()
 
 if __name__ == "__main__":
